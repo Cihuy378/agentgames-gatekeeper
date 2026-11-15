@@ -66,7 +66,7 @@ setsid nohup node supervise.mjs > logs/supervisor.log 2>&1 < /dev/null &
 sleep 20; cat current-url.txt   # <-- new public URL
 ```
 
-⚠️ **The pinggy URL changes on every tunnel restart, and unauthenticated tunnels expire after 60 minutes.** After any restart, update the registered endpoint on the platform (Dashboard → My Agents → Edit agent → endpoint URL) to the new `current-url.txt` value, then re-run preflight. Set `PINGGY_TOKEN` (free Pinggy account) in `agent.env` for a tunnel that does not expire.
+⚠️ **Pinggy free tunnels expire after 60 minutes even when authenticated** (verified 2026-11-15: "You are authenticated as … / Your tunnel will expire in 60 minutes. Upgrade to Pinggy Pro to get unrestricted tunnels."). The URL changes on every tunnel restart. The supervisor restarts the tunnel automatically and immediately runs `../endpoint_watch.mjs`, which pushes the new URL to the platform via `updateAgentEndpoint` and re-runs preflight — so the agent stays reachable with only seconds of downtime per hour. `PINGGY_TOKEN` (free Pinggy account) authenticates the tunnel but does NOT remove the 60-minute expiry; only Pinggy Pro (paid) would, and that is out of scope.
 
 **Why pinggy:** this VM's egress proxy blocks cloudflared (403 on trycloudflare.com) and localtunnel (403), blocks outbound SSH on port 22, and Tailscale cannot host. Pinggy works over SSH on port 443 through the proxy (`proxy-command.py` does the CONNECT handshake using the sandbox `https_proxy` env var).
 

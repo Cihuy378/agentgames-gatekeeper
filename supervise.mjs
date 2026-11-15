@@ -72,7 +72,7 @@ function startServer() {
 function startTunnel() {
   if (tunnelProc) return;
   log(`starting pinggy tunnel (authenticated=${!!PINGGY_TOKEN})`);
-  const target = PINGGY_TOKEN ? `-t${PINGGY_TOKEN}@free.pinggy.io` : 'free.pinggy.io';
+  const target = PINGGY_TOKEN ? `${PINGGY_TOKEN}@free.pinggy.io` : 'free.pinggy.io';
   tunnelProc = spawn('ssh', [
     '-p', '443',
     '-R0:localhost:' + PORT,
@@ -96,9 +96,15 @@ function startTunnel() {
       currentUrl = m[0];
       fs.writeFileSync(URL_FILE, currentUrl + '/agent\n');
       log(`PUBLIC URL: ${currentUrl}/agent`);
+      // Pinggy free tunnels expire after 60 min even when authenticated, and
+      // the URL changes on every restart. Push the new URL to the platform
+      // immediately so the agent stays reachable during rounds.
+      spawn('node', [path.join(DIR, '..', 'endpoint_watch.mjs')], {
+        cwd: DIR, env: process.env, stdio: 'ignore', detached: true,
+      }).unref();
     }
     if (s.includes('expire in 60 minutes')) {
-      log('WARNING: unauthenticated pinggy tunnel — expires in 60 min. Set PINGGY_TOKEN for a stable tunnel.');
+      log('NOTE: pinggy free tunnel expires in 60 min (token is set; only Pinggy Pro removes the limit) — endpoint_watch re-syncs the URL on restart.');
     }
   };
   tunnelProc.stdout.on('data', onData);
