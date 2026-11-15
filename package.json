@@ -1,0 +1,1 @@
+{"dependencies":{"snarkjs":"0.7.6"},"description":"Proof Gatekeeper agent for zkVerify Agent Games — deterministic trap checks + local Groth16 proofs + Kurier submission.","engines":{"node":">=18"},"main":"server.js","name":"agentgames-gatekeeper","private":true,"scripts":{"start":"node server.js","test":"node test-decide.js && node test-e2e.js"},"version":"1.0.0"}
