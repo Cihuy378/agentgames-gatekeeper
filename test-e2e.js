@@ -71,21 +71,19 @@ async function post(pathname, obj, { signed = true, raw = null } = {}) {
 }
 
 (async () => {
-  // Isolate test state: point the server at a temp data dir via cwd copy.
-  // Simplest: run the server in this dir; it writes data/ here. Clean first.
-  const dataDir = path.join(__dirname, 'data');
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  // Isolate test state in a temp dir — NEVER touch the production data/.
+  const dataDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'gatekeeper-e2e-'));
 
   const child = spawn('node', ['server.js'], {
     cwd: __dirname,
-    env: { ...process.env, PORT: String(PORT), AGENT_GAMES_HMAC_SECRET: SECRET },
+    env: { ...process.env, PORT: String(PORT), AGENT_GAMES_HMAC_SECRET: SECRET, DATA_DIR: dataDir },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let serverOut = '';
   child.stdout.on('data', (d) => { serverOut += d; });
   child.stderr.on('data', (d) => { serverOut += d; });
 
-  const stop = () => { try { child.kill('SIGTERM'); } catch {} };
+  const stop = () => { try { child.kill('SIGTERM'); } catch {} try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch {} };
   process.on('exit', stop);
 
   try {

@@ -184,17 +184,19 @@ async function handleTask(env, startedAt, decided) {
         public_signals: proved.publicSignals,
         proof_tx: proofTx,
       };
-      // Kurier submission (async record; await acceptance with a short
-      // timeout so a slow Kurier never eats the response window).
-      if (kurier.configured() && Date.now() - startedAt < 30000) {
-        try {
-          const sub = await kurier.submitProof(proved.proof, proved.publicSignals, 10000);
-          store.putJob(sub.jobId, { taskId, status: 'Submitted', optimisticVerify: sub.optimisticVerify || null });
-          log({ ev: 'kurier-submitted', taskId, jobId: sub.jobId, optimisticVerify: sub.optimisticVerify || null });
-        } catch (e) {
-          log({ ev: 'kurier-submit-failed', taskId, err: String(e.message).slice(0, 300) });
-        }
-      } else if (!kurier.configured()) {
+      // Kurier submission — FIRE AND FORGET. The response does not carry the
+      // job id, and the reliability bonus is settled at round close, so
+      // there is no reason to block the reply on Kurier (a slow submit
+      // once ate the full 10s timeout even though curl proved the API
+      // answers in ~1s). The background poller tracks finalization.
+      if (kurier.configured()) {
+        kurier.submitProof(proved.proof, proved.publicSignals, 30000)
+          .then((sub) => {
+            store.putJob(sub.jobId, { taskId, status: 'Submitted', optimisticVerify: sub.optimisticVerify || null });
+            log({ ev: 'kurier-submitted', taskId, jobId: sub.jobId, optimisticVerify: sub.optimisticVerify || null });
+          })
+          .catch((e) => log({ ev: 'kurier-submit-failed', taskId, err: String(e.message).slice(0, 300) }));
+      } else {
         log({ ev: 'kurier-skipped', taskId, reason: 'KURIER_API_KEY unset (degraded mode)' });
       }
       log({ ev: 'task-done', taskId, mode: taskMode, decision: finalDecision, reason_code: finalReason, proofMs: proved.ms, ms: Date.now() - t0 });
