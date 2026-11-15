@@ -1,23 +1,45 @@
-// supervise.mjs — keeps the gatekeeper server + cloudflared tunnel alive.
+// supervise.mjs — keeps the gatekeeper server + pinggy tunnel alive.
 //   node supervise.mjs
 // Run under nohup (no systemd on this VM):
 //   cd ~/workspace/agentgames/server
 //   nohup node supervise.mjs > logs/supervisor.log 2>&1 &
 // The public URL is written to current-url.txt whenever the tunnel (re)starts.
-// NOTE: a trycloudflare URL CHANGES on tunnel restart — after a restart, the
-// registered endpoint on agentgames.zkverify.io must be updated to the new URL
-// (Dashboard -> My Agents -> Edit agent -> endpoint).
+//
+// WHY PINGGY: this VM's egress proxy blocks cloudflared (403 on
+// trycloudflare.com) and localtunnel (403), blocks outbound SSH on port 22,
+// and Tailscale cannot host. Pinggy over SSH:443 through the proxy works.
+// Tunnel URL pattern: https://<sub>.free.pinggy.net (primary) and
+// https://<sub>.run.pinggy-free.link (alt).
+//
+// ⚠️ UNAUTHENTICATED pinggy tunnels EXPIRE AFTER 60 MINUTES and the URL
+// changes on every restart. The registered endpoint on
+// agentgames.zkverify.io must be updated to the new current-url.txt value
+// after each restart (Dashboard -> My Agents -> Edit agent -> endpoint),
+// ideally within minutes — tasks sent to a dead URL time out.
+// FIX: set PINGGY_TOKEN in ../agent.env (free Pinggy account token) —
+// authenticated tunnels do not have the 60-minute limit.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
-const CLOUDFLARED = process.env.CLOUDFLARED_BIN || path.join(DIR, '..', 'bin', 'cloudflared');
 const PORT = process.env.PORT || '3000';
 const URL_FILE = path.join(DIR, 'current-url.txt');
 const LOG_DIR = path.join(DIR, 'logs');
 fs.mkdirSync(LOG_DIR, { recursive: true });
+
+// Load ../agent.env (mode 600) into process.env without overriding real env.
+for (const p of [path.join(DIR, '..', 'agent.env'), path.join(DIR, '.env')]) {
+  try {
+    for (const line of fs.readFileSync(p, 'utf8').split('\n')) {
+      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
+      if (m && !(m[1] in process.env)) process.env[m[1]] = m[2];
+    }
+  } catch { /* missing file: fine */ }
+}
+
+const PINGGY_TOKEN = (process.env.PINGGY_TOKEN || '').trim();
 
 function log(msg) {
   const line = `[${new Date().toISOString()}] ${msg}`;
@@ -49,26 +71,40 @@ function startServer() {
 
 function startTunnel() {
   if (tunnelProc) return;
-  log('starting cloudflared quick tunnel');
-  tunnelProc = spawn(CLOUDFLARED, ['tunnel', '--url', `http://127.0.0.1:${PORT}`], {
-    cwd: DIR,
-    env: process.env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  const out = fs.createWriteStream(path.join(LOG_DIR, 'cloudflared.log'), { flags: 'a' });
+  log(`starting pinggy tunnel (authenticated=${!!PINGGY_TOKEN})`);
+  const target = PINGGY_TOKEN ? `-t${PINGGY_TOKEN}@free.pinggy.io` : 'free.pinggy.io';
+  tunnelProc = spawn('ssh', [
+    '-p', '443',
+    '-R0:localhost:' + PORT,
+    '-o', 'StrictHostKeyChecking=no',
+    '-o', 'UserKnownHostsFile=/dev/null',
+    '-o', 'ServerAliveInterval=30',
+    '-o', 'ServerAliveCountMax=3',
+    '-o', 'ExitOnForwardFailure=yes',
+    '-o', `ProxyCommand=python3 ${path.join(DIR, 'proxy-command.py')} %h %p`,
+    '-T',
+    target,
+  ], { cwd: DIR, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const out = fs.createWriteStream(path.join(LOG_DIR, 'pinggy.log'), { flags: 'a' });
   const onData = (d) => {
     out.write(d);
-    const m = String(d).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i);
+    const s = String(d);
+    // Prefer the primary free.pinggy.net URL; fall back to the alt domain.
+    const m = s.match(/https:\/\/[a-z0-9-]+\.free\.pinggy\.net/i)
+      || s.match(/https:\/\/[a-z0-9-]+\.run\.pinggy-free\.link/i);
     if (m && m[0] !== currentUrl) {
       currentUrl = m[0];
       fs.writeFileSync(URL_FILE, currentUrl + '/agent\n');
       log(`PUBLIC URL: ${currentUrl}/agent`);
     }
+    if (s.includes('expire in 60 minutes')) {
+      log('WARNING: unauthenticated pinggy tunnel — expires in 60 min. Set PINGGY_TOKEN for a stable tunnel.');
+    }
   };
   tunnelProc.stdout.on('data', onData);
   tunnelProc.stderr.on('data', onData);
   tunnelProc.on('exit', (code, sig) => {
-    log(`cloudflared exited code=${code} sig=${sig} — restarting in 5s (URL WILL CHANGE)`);
+    log(`pinggy tunnel exited code=${code} sig=${sig} — restarting in 5s (URL WILL CHANGE)`);
     tunnelProc = null;
     currentUrl = null;
     setTimeout(startTunnel, 5000);
